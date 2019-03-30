@@ -2,8 +2,8 @@ package dexter
 
 import (
 	"container/heap"
-	json "encoding/json"
-	"github.com/reiver/go-porterstemmer"
+	encoder "encoding/gob"
+	"errors"
 	"log"
 	"math"
 	"os"
@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/reiver/go-porterstemmer"
 )
 
 type Index interface {
@@ -19,8 +21,7 @@ type Index interface {
 	RemoveMany(id []int)
 	Update(id int, data interface{})
 	UpdateMany(items map[int]interface{})
-	Search(query string, n int, template interface{}) []interface{}
-	NumTerms() int
+	Search(ptrISlice interface{}, query string, n int)
 	Print()
 	Close()
 }
@@ -29,6 +30,7 @@ type DocId uint32
 type DocNum uint32
 
 const recordLength = 1 + 4 + 4
+const useJournal = false
 
 type termWeight struct {
 	term   uint64
@@ -75,7 +77,6 @@ type searchIndex struct {
 	debugWords map[uint64]string
 
 	dataFile *os.File
-	encoder  *json.Encoder
 }
 
 // The QueryDoc is used to keep track of results while running a query.
@@ -260,10 +261,9 @@ func NewIndex(name string) (Index, error) {
 		tokenRe:    regexp.MustCompile(`[A-Za-z]+:\d|[A-Za-z]+|[0-9]+`),
 		debugWords: make(map[uint64]string),
 		dataFile:   f,
-		encoder:    json.NewEncoder(f),
 	}
 
-	index.restoreJournal()
+	//index.restoreJournal()
 
 	return index, nil
 }
@@ -302,11 +302,13 @@ func (idx *searchIndex) Update(id int, data interface{}) {
 
 func (idx *searchIndex) getKeywords(pos int64) string {
 	idx.dataFile.Seek(pos, os.SEEK_SET)
-	decoder := json.NewDecoder(idx.dataFile)
+	decoder := encoder.NewDecoder(idx.dataFile)
 
 	var keywords string
-	var cmd JournalCommand
-	decoder.Decode(&cmd) // always add or update
+	if useJournal {
+		var cmd JournalCommand
+		decoder.Decode(&cmd) // always add or update
+	}
 
 	err := decoder.Decode(&keywords)
 	if err != nil {
@@ -344,9 +346,13 @@ func (idx *searchIndex) UpdateMany(items map[int]interface{}) {
 	l := recordLength
 	for _, work := range updates {
 		pos, _ := idx.dataFile.Seek(0, os.SEEK_END)
-		idx.encoder.Encode(JournalCommand{UPDATE, work.docid, pos})
-		idx.encoder.Encode(work.keywords)
-		idx.encoder.Encode(work.data)
+		enc := encoder.NewEncoder(idx.dataFile)
+
+		if useJournal {
+			enc.Encode(JournalCommand{UPDATE, work.docid, pos})
+		}
+		enc.Encode(work.keywords)
+		enc.Encode(work.data)
 
 		i := int(work.docnum)
 		idx.docs[i*l+5] = byte(pos >> 24)
@@ -360,7 +366,7 @@ func (idx *searchIndex) UpdateMany(items map[int]interface{}) {
 func (idx *searchIndex) restoreJournal() {
 	idx.mutex.Lock()
 	defer idx.mutex.Unlock()
-	decoder := json.NewDecoder(idx.dataFile)
+	decoder := encoder.NewDecoder(idx.dataFile)
 
 	for {
 		var cmd JournalCommand
@@ -395,11 +401,9 @@ func (idx *searchIndex) restoreJournal() {
 
 		case UPDATE:
 			panic("not implemented")
-			break
 
 		default:
 			panic("Error!!!")
-			break
 		}
 	}
 	log.Printf("Successfully restored from journal")
@@ -413,9 +417,12 @@ func (idx *searchIndex) Add(id int, doc string, data interface{}) {
 	docid := DocId(id)
 
 	pos, _ := idx.dataFile.Seek(0, os.SEEK_END)
-	idx.encoder.Encode(JournalCommand{ADD, docid, pos})
-	idx.encoder.Encode(doc)
-	idx.encoder.Encode(data)
+	enc := encoder.NewEncoder(idx.dataFile)
+	if useJournal {
+		enc.Encode(JournalCommand{ADD, docid, pos})
+	}
+	enc.Encode(doc)
+	enc.Encode(data)
 
 	idx.add(docid, doc, pos)
 }
@@ -524,11 +531,25 @@ func (idx *searchIndex) Print() {
 
 // Search the document, returning a maximum of n document ids. They are ordered
 // in decreasing order of relevance.
-func (idx *searchIndex) Search(query string, n int, template interface{}) []interface{} {
+func (idx *searchIndex) Search(ptrISlice interface{}, query string, n int) {
 	idx.mutex.RLock()
 	defer idx.mutex.RUnlock()
 
-	var results []interface{}
+	ptrType := reflect.TypeOf(ptrISlice)
+	if ptrType.Kind() != reflect.Ptr {
+		panic(errors.New("Must pass in a pointer"))
+	}
+
+	slicePtrValue := reflect.ValueOf(ptrISlice)
+	sliceValue := reflect.Indirect(slicePtrValue)
+	sliceValueType := sliceValue.Type()
+	sliceElemType := sliceValueType.Elem()
+	if sliceValueType.Kind() != reflect.Slice {
+		panic(errors.New("Must pass in a ptr to slice"))
+	}
+
+	log.Printf("slicePtrValue=%v sliceValue=%v sliceValueType=%v, sliceElemType=%v",
+		slicePtrValue, sliceValue, sliceValueType, sliceElemType)
 
 	maxdocs := DocNum(len(idx.docs) / recordLength)
 	docmap := make([]int, maxdocs, maxdocs)
@@ -547,7 +568,7 @@ func (idx *searchIndex) Search(query string, n int, template interface{}) []inte
 	numQueryTerms := len(stemmed)
 
 	if numQueryTerms == 0 {
-		return results
+		return
 	}
 
 	// for each stemmed word,
@@ -641,17 +662,19 @@ func (idx *searchIndex) Search(query string, n int, template interface{}) []inte
 	}
 
 	// return results
-	results = make([]interface{}, queryDocs.Len(), queryDocs.Len())
+	//for i := 0; i < queryDocs.Len(); i++ {
 	for i := queryDocs.Len() - 1; i >= 0; i -= 1 {
 		queryDoc := heap.Pop(queryDocs).(*QueryDoc)
 		idx.dataFile.Seek(queryDoc.pos, os.SEEK_SET)
-		decoder := json.NewDecoder(idx.dataFile)
-		item := reflect.New(reflect.TypeOf(template).Elem()).Interface()
+		decoder := encoder.NewDecoder(idx.dataFile)
+		item := reflect.New(sliceElemType)
 
 		// decode journal entry and discard
-		var cmd JournalCommand
-		if err := decoder.Decode(&cmd); err != nil {
-			panic(err)
+		if useJournal {
+			var cmd JournalCommand
+			if err := decoder.Decode(&cmd); err != nil {
+				panic(err)
+			}
 		}
 
 		// first decode the keywords and discard
@@ -662,16 +685,27 @@ func (idx *searchIndex) Search(query string, n int, template interface{}) []inte
 		}
 
 		// Now decode the item of interest
-		err = decoder.Decode(item)
+		err = decoder.Decode(item.Interface())
 		if err != nil {
 			panic(err)
 		}
-		results[i] = item
+
+		sliceValue = reflect.Append(sliceValue, reflect.Indirect(item))
 	}
 
-	return results
+	reverseSlice(sliceValue.Interface())
+
+	slicePtrValue.Elem().Set(sliceValue)
 }
 
+//panic if s is not a slice
+func reverseSlice(s interface{}) {
+	size := reflect.ValueOf(s).Len()
+	swap := reflect.Swapper(s)
+	for i, j := 0, size-1; i < j; i, j = i+1, j-1 {
+		swap(i, j)
+	}
+}
 func (self *QueryDocs) Len() int {
 	return len(self.docs)
 }

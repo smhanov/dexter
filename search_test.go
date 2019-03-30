@@ -92,8 +92,9 @@ func Test_Search(t *testing.T) {
 	index.Print()
 
 	count := 0
-	for _, iface := range index.Search("canon dslr", 10, &docs[0]) {
-		doc := iface.(*Product)
+	var results []Product
+	index.Search(&results, "canon dslr", 10)
+	for _, doc := range results {
 		t.Logf("Got doc %v", doc.Id)
 		if doc.Id == 0 {
 			t.Errorf("Returned document does not contain search term.")
@@ -108,8 +109,9 @@ func Test_Search(t *testing.T) {
 
 	index.Remove(1)
 	count = 0
-	for _, iface := range index.Search("canon dslr", 10, &docs[0]) {
-		doc := iface.(*Product)
+	results = results[:0]
+	index.Search(&results, "canon dslr", 10)
+	for _, doc := range results {
 		t.Logf("Got doc %v", doc)
 		if doc.Id == 0 {
 			t.Errorf("Returned document does not contain search term.")
@@ -129,8 +131,9 @@ func Test_Search(t *testing.T) {
 	index.Update(0, &docs[0])
 
 	count = 0
-	for _, iface := range index.Search("fox", 10, &docs[0]) {
-		doc := iface.(*Product)
+	results = results[:0]
+	index.Search(&results, "fox", 10)
+	for _, doc := range results {
 		if doc.Id == 0 && doc.Price != 67 {
 			t.Errorf("Update had no effect")
 		}
@@ -143,35 +146,32 @@ func Test_Search(t *testing.T) {
 
 	// Search for ipad should return docid 4 then 3 since ipad has a higher
 	// weight in the longer doc.
-	ifaces := index.Search("ipad", 10, &docs[0])
-	if len(ifaces) != 2 {
+	results = results[:0]
+	index.Search(&results, "ipad", 10)
+	if len(results) != 2 {
 		t.Errorf("Search for ipad should return 2 documents")
 	}
-	doc1 := ifaces[0].(*Product)
-	doc2 := ifaces[1].(*Product)
 
-	if doc1.Id != 4 {
+	if results[0].Id != 4 {
 		t.Errorf("First doc in ipad search should be actual ipad")
 	}
 
-	if doc2.Id != 3 {
+	if results[1].Id != 3 {
 		t.Errorf("Second doc in ipad search should be ipad case")
 	}
 
 	// Search for ipad case should return docid 3 then 4
-	ifaces = index.Search("case for apple ipad", 10, &docs[0])
-	if len(ifaces) != 2 {
+	results = results[:0]
+	index.Search(&results, "case for apple ipad", 10)
+	if len(results) != 2 {
 		t.Errorf("Search for ipad case should return 2 documents")
 	}
 
-	doc1 = ifaces[0].(*Product)
-	doc2 = ifaces[1].(*Product)
-
-	if doc1.Id != 3 {
+	if results[0].Id != 3 {
 		t.Errorf("First doc in ipad case search should be ipad case")
 	}
 
-	if doc2.Id != 4 {
+	if results[1].Id != 4 {
 		t.Errorf("Second doc in ipad case search should be ipad")
 	}
 

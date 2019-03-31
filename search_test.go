@@ -1,6 +1,7 @@
 package dexter
 
 import (
+	"os"
 	"testing"
 )
 
@@ -175,5 +176,12 @@ func Test_Search(t *testing.T) {
 		t.Errorf("Second doc in ipad case search should be ipad")
 	}
 
+	var presults []*Product
+	index.Search(&presults, "ipad", 10)
+	if len(results) == 0 {
+		t.Errorf("Passing a slice of pointers should work too")
+	}
+
 	//t.Fail()
+	os.Remove("test.dex")
 }

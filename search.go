@@ -21,7 +21,7 @@ type Index interface {
 	RemoveMany(id []int)
 	Update(id int, data interface{})
 	UpdateMany(items map[int]interface{})
-	Search(ptrISlice interface{}, query string, n int)
+	Search(ptrISlice interface{}, query string, n int) []float64
 	Print()
 	Close()
 }
@@ -531,7 +531,7 @@ func (idx *searchIndex) Print() {
 
 // Search the document, returning a maximum of n document ids. They are ordered
 // in decreasing order of relevance.
-func (idx *searchIndex) Search(ptrISlice interface{}, query string, n int) {
+func (idx *searchIndex) Search(ptrISlice interface{}, query string, n int) []float64 {
 	idx.mutex.RLock()
 	defer idx.mutex.RUnlock()
 
@@ -548,8 +548,8 @@ func (idx *searchIndex) Search(ptrISlice interface{}, query string, n int) {
 		panic(errors.New("Must pass in a ptr to slice"))
 	}
 
-	log.Printf("slicePtrValue=%v sliceValue=%v sliceValueType=%v, sliceElemType=%v",
-		slicePtrValue, sliceValue, sliceValueType, sliceElemType)
+	//log.Printf("slicePtrValue=%v sliceValue=%v sliceValueType=%v, sliceElemType=%v",
+	//	slicePtrValue, sliceValue, sliceValueType, sliceElemType)
 
 	maxdocs := DocNum(len(idx.docs) / recordLength)
 	docmap := make([]int, maxdocs, maxdocs)
@@ -567,8 +567,9 @@ func (idx *searchIndex) Search(ptrISlice interface{}, query string, n int) {
 
 	numQueryTerms := len(stemmed)
 
+	var relevance []float64
 	if numQueryTerms == 0 {
-		return
+		return relevance
 	}
 
 	// for each stemmed word,
@@ -691,11 +692,14 @@ func (idx *searchIndex) Search(ptrISlice interface{}, query string, n int) {
 		}
 
 		sliceValue = reflect.Append(sliceValue, reflect.Indirect(item))
+		relevance = append(relevance, queryDoc.relevance)
 	}
 
 	reverseSlice(sliceValue.Interface())
+	reverseSlice(relevance)
 
 	slicePtrValue.Elem().Set(sliceValue)
+	return relevance
 }
 
 //panic if s is not a slice
